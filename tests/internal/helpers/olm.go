@@ -10,8 +10,35 @@ import (
 	"github.com/rh-ecosystem-edge/eco-goinfra/pkg/pod"
 	olmV1alpha1 "github.com/rh-ecosystem-edge/eco-goinfra/pkg/schemes/olm/operators/v1alpha1"
 
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// EnsureNamespace creates the namespace if it does not already exist.
+func EnsureNamespace(ctx context.Context, apiClient *clients.Settings, namespace string) error {
+	ns := &corev1.Namespace{}
+	err := apiClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)
+	if err == nil {
+		return nil
+	}
+
+	if !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check namespace %s: %w", namespace, err)
+	}
+
+	_, err = apiClient.CoreV1Interface.Namespaces().Create(
+		ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{})
+	if k8serrors.IsAlreadyExists(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to create namespace %s: %w", namespace, err)
+	}
+
+	return nil
+}
 
 // InstallGAOperatorSubscription creates an OLM OperatorGroup (if missing) and
 // Subscription for the GA operator from the specified catalog. OLM requires

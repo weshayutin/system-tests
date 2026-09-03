@@ -39,15 +39,19 @@ var _ = Describe("NHC Operator Upgrade",
 		labels.ComponentOLM),
 	func() {
 		var (
-			ctx               context.Context
-			previousCSV       *olm.ClusterServiceVersionBuilder
-			preUpgradeImage   string
-			currentTargetNode string
-			operatorUpgraded  bool
+			ctx                context.Context
+			previousCSV        *olm.ClusterServiceVersionBuilder
+			preUpgradeImage    string
+			currentTargetNode  string
+			operatorUpgraded   bool
+			snrInstalledByTest bool
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
+
+			By("Ensuring the Medik8s operator namespace exists")
+			Expect(helpers.EnsureNamespace(ctx, APIClient, medik8sparams.OperatorNs)).To(Succeed())
 
 			if medik8sparams.SkipOCPUpgrade {
 				GinkgoWriter.Println(
@@ -68,11 +72,7 @@ var _ = Describe("NHC Operator Upgrade",
 					"unless MEDIK8S_KUBELET_STOP_OCDEBUG=true is set")
 			}
 
-			By("Checking SNR CRD is installed (used as remediator in this test)")
-
-			if !isSNRCRDInstalled(ctx) {
-				Skip("SelfNodeRemediation CRD not found; SNR operator not installed -- skipping NHC upgrade test")
-			}
+			ensureSNROperatorInstalled(ctx, &snrInstalledByTest)
 
 			By("Verifying at least 2 Ready worker nodes")
 
@@ -93,6 +93,10 @@ var _ = Describe("NHC Operator Upgrade",
 
 		AfterAll(func() {
 			nhcutils.CleanupUpgradeResources(APIClient, GinkgoWriter.Printf)
+
+			if snrInstalledByTest {
+				nhcutils.CleanupBootstrappedSNRResources(APIClient, GinkgoWriter.Printf)
+			}
 		})
 
 		JustAfterEach(func() {
@@ -413,6 +417,47 @@ var _ = Describe("NHC Operator Upgrade",
 				cleanupPostRemediationNHC(ctx, &currentTargetNode, "post-catalog-switch")
 			})
 	})
+
+// ensureSNROperatorInstalled installs SNR through OLM when it is absent and
+// waits until its default remediation template is ready for NHC to use.
+func ensureSNROperatorInstalled(ctx context.Context, installedByTest *bool) {
+	if isSNRCRDInstalled(ctx) {
+		return
+	}
+
+	By("Installing SNR from community-operators for NHC remediation")
+
+	sub, err := nhcutils.InstallSNROperator(APIClient)
+	Expect(err).NotTo(HaveOccurred(), "Failed to install SNR operator")
+	*installedByTest = true
+	GinkgoWriter.Printf("SNR Subscription created: %s (catalog: %s, channel: %s, package: %s)\n",
+		sub.Object.Name,
+		sub.Object.Spec.CatalogSource,
+		sub.Object.Spec.Channel,
+		sub.Object.Spec.Package)
+
+	Eventually(func() error {
+		_, csvErr := helpers.FindSucceededCSV(
+			APIClient, nhcparams.SNRCSVNamePattern, medik8sparams.OperatorNs)
+
+		return csvErr
+	}, medik8sparams.OperatorUpgradeTimeout, nhcparams.DefaultPollInterval).Should(Succeed(),
+		"SNR CSV did not reach Succeeded phase")
+
+	By("Waiting for the SNR controller and default remediation template")
+
+	snrDeploy, err := deployment.Pull(APIClient, nhcparams.SNRDeploymentName, medik8sparams.OperatorNs)
+	Expect(err).NotTo(HaveOccurred(), "Failed to get SNR controller Deployment")
+	Expect(snrDeploy.IsReady(medik8sparams.OperatorUpgradeTimeout)).To(BeTrue(),
+		"SNR controller Deployment did not become Ready")
+
+	Eventually(func() error {
+		template := buildSNRT(nhcparams.SNRTemplateName)
+
+		return APIClient.Get(ctx, client.ObjectKeyFromObject(template), template)
+	}, medik8sparams.OperatorUpgradeTimeout, nhcparams.DefaultPollInterval).Should(Succeed(),
+		"SNR automatic remediation template did not become available")
+}
 
 // waitForActiveControllerNode polls helpers.GetActiveControllerNode until it
 // resolves to a pod that actually exists. Needed because this is called right

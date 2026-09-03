@@ -23,6 +23,20 @@ func InstallGAOperator(apiClient *clients.Settings) (*olm.SubscriptionBuilder, e
 	)
 }
 
+// InstallSNROperator creates a Subscription for SNR when the NHC upgrade test
+// needs a remediator.
+func InstallSNROperator(apiClient *clients.Settings) (*olm.SubscriptionBuilder, error) {
+	return helpers.InstallGAOperatorSubscription(
+		apiClient,
+		nhcparams.SNRUpgradeSubName,
+		medik8sparams.OperatorNs,
+		nhcparams.SNRCatalog,
+		medik8sparams.GACatalogNamespace,
+		nhcparams.SNRPackage,
+		medik8sparams.GAChannel,
+	)
+}
+
 // SwitchSubscriptionCatalog updates the upgrade-test Subscription to point to the
 // given CatalogSource name and target channel.
 func SwitchSubscriptionCatalog(
@@ -53,4 +67,12 @@ func CleanupUpgradeResources(apiClient *clients.Settings, logf func(string, ...i
 	helpers.DeleteSubscription(apiClient, nhcparams.UpgradeSubName, medik8sparams.OperatorNs, logf)
 	helpers.DeleteStaleCSVsAndInstallPlans(
 		apiClient, nhcparams.CSVNamePattern, medik8sparams.OperatorNs, logf)
+}
+
+// CleanupBootstrappedSNRResources removes the SNR resources installed by the
+// NHC upgrade test when SNR was not already present on the cluster.
+func CleanupBootstrappedSNRResources(apiClient *clients.Settings, logf func(string, ...interface{})) {
+	helpers.DeleteSubscription(apiClient, nhcparams.SNRUpgradeSubName, medik8sparams.OperatorNs, logf)
+	helpers.DeleteStaleCSVsAndInstallPlans(
+		apiClient, nhcparams.SNRCSVNamePattern, medik8sparams.OperatorNs, logf)
 }
